@@ -1,0 +1,6 @@
+h=2820112 vis=False rect=475x757@(1043,321) title=clipwin
+h=1180940 vis=False rect=1920x1025@(279,279) title=
+h=15141186 vis=False rect=1920x1025@(25,25) title=
+h=1115694 vis=True rect=15x15@(0,0) title=
+h=2229886 vis=False rect=0x0@(0,0) title=MSCTFIME UI
+h=460040 vis=False rect=0x0@(0,0) title=Default IME
