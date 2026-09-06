@@ -1,5 +1,5 @@
 //! 热键唤出与回贴模块（M1）
-//! - Alt+V 全局热键唤出主窗口（光标处定位）
+//! - Ctrl+Alt+Q 全局热键唤出主窗口（光标处定位）
 //! - 回贴：记录唤出前的前台窗口 → 写剪贴板 → SetForegroundWindow 恢复 → SendInput Ctrl+V
 //! - 失焦自动隐藏
 
@@ -115,12 +115,12 @@ fn apply_win_rect(win: &tauri::WebviewWindow, x: i32, y: i32, w: u32, h: u32) {
     }
 }
 
-/// Alt+V / 托盘触发：唤出主窗口（剪贴板 Tab）
+/// Ctrl+Alt+Q / 托盘触发：唤出主窗口（剪贴板 Tab）
 pub fn popup_at_cursor(app: &AppHandle) {
     popup_at_cursor_tab(app, "clips");
 }
 
-/// Alt+T 触发：唤出主窗口（待办 Tab）
+/// Ctrl+Alt+W 触发：唤出主窗口（待办 Tab）
 pub fn popup_at_cursor_todos(app: &AppHandle) {
     popup_at_cursor_tab(app, "todos");
 }

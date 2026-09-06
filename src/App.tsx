@@ -203,7 +203,7 @@ export default function App() {
   useEffect(() => {
     refresh("");
     const un1 = listen("clip:new", () => refresh(queryRef.current));
-    // 唤出事件：payload.tab 指定落在哪个 Tab（Alt+V=clips / Alt+T=todos）
+    // 唤出事件：payload.tab 指定落在哪个 Tab（Ctrl+Alt+Q=clips / Ctrl+Alt+W=todos）
     const un2 = listen<{ tab: string }>("clipwin:popup", (ev) => {
       const t = ev.payload?.tab === "todos" ? "todos" : "clips";
       if (t !== tabRef.current) setTab(t);
@@ -505,7 +505,7 @@ export default function App() {
           </header>
 
           <div className="toolbar slim">
-            <span className="hint">Alt+V 剪贴板 · Alt+T 待办 · 单击回贴 · ↑↓+Enter · 右键 查看/更多 · Esc 隐藏</span>
+            <span className="hint">Ctrl+Alt+Q 剪贴板 · Ctrl+Alt+W 待办 · 单击回贴 · ↑↓+Enter · 右键 查看/更多 · Esc 隐藏</span>
           </div>
 
           <div className="list" ref={parentRef}>
@@ -662,7 +662,7 @@ export default function App() {
             })}
           </div>
           <div className="todo-foot">
-            <span>双击编辑详情 · Ctrl+V 收任意格式 · Alt+T 直接唤出待办</span>
+            <span>双击编辑详情 · Ctrl+V 收任意格式 · Ctrl+Alt+W 直接唤出待办</span>
           </div>
         </div>
       )}
@@ -674,7 +674,7 @@ export default function App() {
             <input
               className="hk-input"
               readOnly
-              value={hkRecording ? "按下组合键…" : (hkInput || "alt+v")}
+              value={hkRecording ? "按下组合键…" : (hkInput || "ctrl+alt+q")}
               onKeyDown={async (e) => {
                 if (!hkRecording) return;
                 e.preventDefault();
@@ -709,7 +709,7 @@ export default function App() {
             <input
               className="hk-input"
               readOnly
-              value={hkTRecording ? "按下组合键…" : (hkTInput || "alt+t")}
+              value={hkTRecording ? "按下组合键…" : (hkTInput || "ctrl+alt+w")}
               onKeyDown={async (e) => {
                 if (!hkTRecording) return;
                 e.preventDefault();

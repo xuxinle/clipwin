@@ -91,8 +91,8 @@ pub fn run() {
 
             // ---- 托盘常驻 ----
             use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
-            let show_i = MenuItem::with_id(app, "show", "显示剪贴板 (Alt+V)", true, None::<&str>)?;
-            let todo_i = MenuItem::with_id(app, "todos", "显示待办 (Alt+T)", true, None::<&str>)?;
+            let show_i = MenuItem::with_id(app, "show", "显示剪贴板 (Ctrl+Alt+Q)", true, None::<&str>)?;
+            let todo_i = MenuItem::with_id(app, "todos", "显示待办 (Ctrl+Alt+W)", true, None::<&str>)?;
             let pause_i = CheckMenuItem::with_id(app, "pause", "暂停监听（隐私模式）", true, false, None::<&str>)?;
             let clear_i = MenuItem::with_id(app, "clear", "清空历史（保留收藏）", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
@@ -101,7 +101,7 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&show_i, &todo_i, &pause_i, &clear_i, &sep1, &about_i, &quit_i])?;
             let tray = tauri::tray::TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("clipwin · Alt+V 唤出")
+                .tooltip("clipwin · Ctrl+Alt+Q 唤出")
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     match event.id.as_ref() {
@@ -124,7 +124,7 @@ pub fn run() {
                             if let Some(state) = app.try_state::<AppState>() {
                                 if let Ok(s) = state.store.lock() { s.set_setting("paused", if paused { "1" } else { "0" }); }
                             }
-                            let _ = app.tray_by_id("main-tray").map(|t| t.set_tooltip(Some(if paused { "clipwin · 已暂停监听" } else { "clipwin · Alt+V 唤出" })));
+                            let _ = app.tray_by_id("main-tray").map(|t| t.set_tooltip(Some(if paused { "clipwin · 已暂停监听" } else { "clipwin · Ctrl+Alt+Q 唤出" })));
                             // 菜单项勾选态
 
                         }
@@ -160,24 +160,32 @@ pub fn run() {
                 }
             });
 
-            // ---- 全局热键：从设置读取（默认 alt+v 剪贴板 / alt+t 待办），唤出/隐藏切换 ----
+            // ---- 全局热键：从设置读取（默认 ctrl+alt+q 剪贴板 / ctrl+alt+w 待办），唤出/隐藏切换 ----
             use tauri_plugin_global_shortcut::GlobalShortcutExt;
             use tauri_plugin_global_shortcut::Shortcut;
             {
                 let state = app.state::<AppState>();
                 let (hk, hk_t) = {
                     let s = state.store.lock().unwrap();
+                    // 旧默认迁移：v0.1.1 及之前默认 alt+v/alt+t，随 v0.1.2 改默认——
+                    // 仍是旧默认值的（=用户从未自定义）一次性迁移到新默认
+                    if s.get_setting("hotkey").as_deref() == Some("alt+v") {
+                        s.set_setting("hotkey", "ctrl+alt+q");
+                    }
+                    if s.get_setting("hotkey_todos").as_deref() == Some("alt+t") {
+                        s.set_setting("hotkey_todos", "ctrl+alt+w");
+                    }
                     (
-                        s.get_setting("hotkey").unwrap_or_else(|| "alt+v".into()),
-                        s.get_setting("hotkey_todos").unwrap_or_else(|| "alt+t".into()),
+                        s.get_setting("hotkey").unwrap_or_else(|| "ctrl+alt+q".into()),
+                        s.get_setting("hotkey_todos").unwrap_or_else(|| "ctrl+alt+w".into()),
                     )
                 };
-                let sc: Shortcut = hk.parse().unwrap_or_else(|_| Shortcut::new(Some(Modifiers::ALT), Code::KeyV));
+                let sc: Shortcut = hk.parse().unwrap_or_else(|_| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyQ));
                 app.global_shortcut().on_shortcut(sc, move |_app, _s, e| {
                     if e.state() == ShortcutState::Pressed { commands::toggle_main(&_app.clone()); }
                 })
                 .map_err(|e| format!("注册热键失败: {e}"))?;
-                let sc_t: Shortcut = hk_t.parse().unwrap_or_else(|_| Shortcut::new(Some(Modifiers::ALT), Code::KeyT));
+                let sc_t: Shortcut = hk_t.parse().unwrap_or_else(|_| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyW));
                 app.global_shortcut().on_shortcut(sc_t, move |_app, _s, e| {
                     if e.state() == ShortcutState::Pressed { commands::toggle_main_todos(&_app.clone()); }
                 })

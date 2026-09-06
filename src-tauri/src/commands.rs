@@ -334,8 +334,8 @@ pub fn settings_all(state: State<AppState>) -> Result<serde_json::Value, String>
     let s = state.store.lock().map_err(|e| e.to_string())?;
     let get = |k: &str, d: &str| s.get_setting(k).unwrap_or_else(|| d.to_string());
     Ok(serde_json::json!({
-        "hotkey": get("hotkey", "alt+v"),
-        "hotkey_todos": get("hotkey_todos", "alt+t"),
+        "hotkey": get("hotkey", "ctrl+alt+q"),
+        "hotkey_todos": get("hotkey_todos", "ctrl+alt+w"),
         "history_limit": get("history_limit", "10000").parse::<i64>().unwrap_or(10000),
         "paused": crate::clipboard_watcher::PAUSED.load(std::sync::atomic::Ordering::Relaxed),
         "autostart": autostart_enabled(),
@@ -355,8 +355,8 @@ fn re_register_hotkeys(app: &AppHandle) -> Result<(), String> {
     let (hk, hk_t) = {
         let s = state.store.lock().map_err(|e| e.to_string())?;
         (
-            s.get_setting("hotkey").unwrap_or_else(|| "alt+v".into()),
-            s.get_setting("hotkey_todos").unwrap_or_else(|| "alt+t".into()),
+            s.get_setting("hotkey").unwrap_or_else(|| "ctrl+alt+q".into()),
+            s.get_setting("hotkey_todos").unwrap_or_else(|| "ctrl+alt+w".into()),
         )
     };
     let mgr = app.global_shortcut();
@@ -429,7 +429,7 @@ pub fn toggle_main(app: &AppHandle) {
     }
 }
 
-/// 唤出/隐藏主窗口（待办 Tab；Alt+T）
+/// 唤出/隐藏主窗口（待办 Tab；Ctrl+Alt+W）
 pub fn toggle_main_todos(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         if win.is_visible().unwrap_or(false) {
