@@ -443,6 +443,7 @@ export default function App() {
     count: rows.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 56,
+    getItemKey: (i: number) => rows[i]?.id ?? i,
     overscan: 12,
   });
   const items = virtualizer.getVirtualItems();
@@ -500,8 +501,10 @@ export default function App() {
                 return (
                   <div
                     key={row.id}
-                    className={sel ? "row sel" : "row"}
-                    style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vi.start}px)`, height: vi.size }}
+                    data-index={vi.index}
+                    ref={virtualizer.measureElement}
+                    className={`row${sel ? " sel" : ""}${expanded === row.id ? " expanded" : ""}`}
+                    style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vi.start}px)` }}
                     onMouseEnter={() => setSelId(row.id)}
                     onClick={() => {
                       if (row.kind === "image" && row.image_path) {

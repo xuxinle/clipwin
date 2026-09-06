@@ -231,6 +231,14 @@ header input:focus { border-color: #6868e0; box-shadow: 0 0 0 3px rgba(104,104,2
 /* ---- M4 视觉打磨 ---- */
 /* 列表行 hover/选中过渡 */
 .row { transition: background .12s ease, transform .12s ease; }
+
+/* 点击展开态：完整多行内容 + 左侧主题色指示条 */
+.row.expanded { align-items: flex-start; padding-top: 10px; box-shadow: inset 3px 0 0 #6366f1; background: #f1f0fe; }
+.row.expanded.sel { background: #e9e7fd; }
+.row.expanded .kicon { margin-top: 2px; }
+.row.expanded .rtext { white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow-y: auto; line-height: 1.55; }
+.row.expanded .rmeta { margin-top: 2px; flex: none; }
+.row.expanded .thumb { max-height: 300px; }
 .row:hover { background: #f0effc; }
 .row.sel { background: #eae8fc; }
 /* Tab 激活下划线动画 */
