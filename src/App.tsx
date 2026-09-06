@@ -244,6 +244,17 @@ export default function App() {
     }
   }
 
+  /** 右键「查看」：图片=放大查看器，文本=行内展开/收起 */
+  function ctxView(id: number) {
+    const row = rows.find((r) => r.id === id);
+    if (!row) return;
+    if (row.kind === "image" && row.image_path) {
+      setViewerImg(convertFileSrc(row.image_path.replace(/\.dib$/, ".png")));
+    } else {
+      setExpanded(expanded === id ? null : id);
+    }
+  }
+
   function moveSel(delta: number) {
     const rs = rowsRef.current;
     if (rs.length === 0) return;
@@ -482,14 +493,14 @@ export default function App() {
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索… ↑↓ 选择 · Enter 粘贴 · Esc 隐藏"
+              placeholder="搜索… 单击或 Enter 回贴"
               autoFocus
               spellCheck={false}
             />
           </header>
 
           <div className="toolbar slim">
-            <span className="hint">Alt+V 剪贴板 · Alt+T 待办 · ↑↓ 选择 · Enter 回贴 · 右键更多操作 · Esc 隐藏</span>
+            <span className="hint">Alt+V 剪贴板 · Alt+T 待办 · 单击回贴 · ↑↓+Enter · 右键 查看/更多 · Esc 隐藏</span>
           </div>
 
           <div className="list" ref={parentRef}>
@@ -506,13 +517,7 @@ export default function App() {
                     className={`row${sel ? " sel" : ""}${expanded === row.id ? " expanded" : ""}`}
                     style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vi.start}px)` }}
                     onMouseEnter={() => setSelId(row.id)}
-                    onClick={() => {
-                      if (row.kind === "image" && row.image_path) {
-                        setViewerImg(convertFileSrc(row.image_path.replace(/\.dib$/, ".png")));
-                      } else {
-                        setExpanded(expanded === row.id ? null : row.id); // 点击=展开/收起查看
-                      }
-                    }}
+                    onClick={() => pasteBack(row.id)} // 单击=回贴并隐藏窗口
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setCtxMenu({ x: e.clientX, y: e.clientY, clipId: row.id });
@@ -796,7 +801,9 @@ export default function App() {
         <>
           <div style={{ position: "fixed", inset: 0, zIndex: 998 }} onClick={closeCtxMenu} onContextMenu={(e) => { e.preventDefault(); closeCtxMenu(); }} />
           <div className="ctxmenu" style={{ left: Math.min(ctxMenu.x, window.innerWidth - 180), top: Math.min(ctxMenu.y, window.innerHeight - 100) }}>
-                        <div className="item" onClick={() => clipTogglePin(ctxMenu.clipId)}>⭐ 收藏 / 取消收藏</div>
+                        <div className="item" onClick={() => { pasteBack(ctxMenu.clipId); closeCtxMenu(); }}>📋 粘贴此项</div>
+            <div className="item" onClick={() => { ctxView(ctxMenu.clipId); closeCtxMenu(); }}>👁 查看 / 展开</div>
+            <div className="item" onClick={() => clipTogglePin(ctxMenu.clipId)}>⭐ 收藏 / 取消收藏</div>
             <div className="item" onClick={() => saveClipAsTodoAndEdit(ctxMenu.clipId)}>✅ 存为待办</div>
             <div className="item" onClick={() => clipDelete(ctxMenu.clipId)}>🗑️ 删除此项</div>
             <div className="item danger" onClick={() => clipsClear()}>🧹 清空历史（保留收藏）</div>
