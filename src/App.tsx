@@ -213,6 +213,8 @@ export default function App() {
     // 窗口从隐藏到可见（托盘/热键唤出）：重新聚焦
     const onVis = () => {
       if (document.visibilityState === "visible") {
+        // 每次唤出重拉列表（回贴置顶/新增条目立即反映）
+        refresh(queryRef.current);
         if (tabRef.current === "clips") focusInput();
         else todoInputRef.current?.focus();
       }

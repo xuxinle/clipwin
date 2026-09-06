@@ -370,7 +370,13 @@ impl Store {
         }
     }
 
-    /// 取一条完整记录（粘贴回填用）
+    /// 回贴置顶：更新 ts 为当前时间（列表按 ts DESC 排序，自动浮到最上面）
+pub fn touch(&mut self, id: i64) -> rusqlite::Result<()> {
+    self.conn.execute("UPDATE clips SET ts = ?1 WHERE id = ?2", params![now_ts_ms(), id])?;
+    Ok(())
+}
+
+/// 取一条完整记录（粘贴回填用）
     pub fn get(&self, id: i64) -> rusqlite::Result<Option<ClipRow>> {
         self.conn
             .query_row(

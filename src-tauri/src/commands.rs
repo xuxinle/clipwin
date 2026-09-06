@@ -83,6 +83,8 @@ pub fn paste_back(app: AppHandle, state: State<AppState>, id: i64) -> Result<(),
         .get(id)
         .map_err(|e| e.to_string())?;
     let row = row.ok_or("记录不存在")?;
+    // 回贴即置顶：更新 ts，下次唤出该条在最上面（CopyQ/Ditto 行为）
+    state.store.lock().map_err(|e| e.to_string())?.touch(id).map_err(|e| e.to_string())?;
     match row.kind.as_str() {
         "text" => {
             let text = row.text.clone().ok_or("文本条目无内容")?;
