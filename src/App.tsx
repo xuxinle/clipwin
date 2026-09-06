@@ -207,6 +207,9 @@ export default function App() {
     const un2 = listen<{ tab: string }>("clipwin:popup", (ev) => {
       const t = ev.payload?.tab === "todos" ? "todos" : "clips";
       if (t !== tabRef.current) setTab(t);
+      // 热键唤出必刷新：回贴置顶/新增立即反映（visibilitychange 在 WebView2 不可靠）
+      refresh(t === "clips" ? queryRef.current : "");
+      if (t === "todos") refreshTodos();
       if (t === "clips") focusInput();
       else todoInputRef.current?.focus();
     });
