@@ -200,6 +200,13 @@ export default function App() {
       }, 60);
     }
   }
+  // 屏蔽 WebView 浏览器默认右键菜单（全应用，任何位置）
+  useEffect(() => {
+    const noCtx = (e: MouseEvent) => e.preventDefault();
+    document.addEventListener("contextmenu", noCtx);
+    return () => document.removeEventListener("contextmenu", noCtx);
+  }, []);
+
   useEffect(() => {
     refresh("");
     const un1 = listen("clip:new", () => refresh(queryRef.current));
@@ -458,7 +465,7 @@ export default function App() {
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 56,
+    estimateSize: () => 64,
     getItemKey: (i: number) => rows[i]?.id ?? i,
     overscan: 12,
   });
@@ -505,8 +512,7 @@ export default function App() {
           </header>
 
           <div className="toolbar slim">
-            <span className="hint">Ctrl+Alt+Q 剪贴板 · Ctrl+Alt+W 待办 · 单击回贴 · ↑↓+Enter · 右键 查看/更多 · Esc 隐藏</span>
-          </div>
+                      </div>
 
           <div className="list" ref={parentRef}>
             {rows.length === 0 && <div className="empty">暂无记录 — 复制点什么</div>}
@@ -662,8 +668,7 @@ export default function App() {
             })}
           </div>
           <div className="todo-foot">
-            <span>双击编辑详情 · Ctrl+V 收任意格式 · Ctrl+Alt+W 直接唤出待办</span>
-          </div>
+                      </div>
         </div>
       )}
 

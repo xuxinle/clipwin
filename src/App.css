@@ -55,7 +55,7 @@ header input:focus { border-color: #6868e0; box-shadow: 0 0 0 3px rgba(104,104,2
 
 .row {
   display: flex; align-items: center; gap: 10px;
-  padding: 0 12px; border-bottom: 1px solid #f0f0f5; cursor: pointer;
+  min-height: 64px; padding: 10px 12px; border-bottom: 1px solid #f0f0f5; cursor: pointer;
 }
 .row:hover { background: #f2f3fa; }
 .row.sel { background: #e4e6f8; }
@@ -207,7 +207,7 @@ header input:focus { border-color: #6868e0; box-shadow: 0 0 0 3px rgba(104,104,2
 
 /* ---- M4：收藏星标/富文本/缩略图/相对时间/查看器 ---- */
 .row .star { font-size: 11px; flex: 0 0 auto; }
-.row .thumb { height: 44px; max-width: 120px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; }
+.row .thumb { height: 48px; max-width: 128px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; }
 .row .rmeta { flex: 0 0 auto; font-size: 10px; color: #999; margin-left: 6px; white-space: nowrap; }
 .row .mini.expand { flex: 0 0 auto; font-size: 10px; padding: 1px 6px; border-radius: 8px; border: 1px solid #ddd; background: #fff; color: #666; cursor: pointer; }
 .viewer { position: fixed; inset: 0; z-index: 999; background: rgba(0,0,0,.82); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }

@@ -198,6 +198,11 @@ pub fn todos_get(state: State<AppState>, id: i64) -> Result<Option<TodoRow>, Str
     state.store.lock().map_err(|e| e.to_string())?.todos_get(id).map_err(|e| e.to_string())
 }
 
+/// HTML 转义（纯文本 → 待办内容区）
+fn esc_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 /// 剪贴板条目 → 待办（右键菜单）：直接引用 blob 文件（不拷贝，剪贴板 LRU 清理时引用计数保护）
 #[tauri::command]
 pub fn clip_to_todo(state: State<AppState>, id: i64) -> Result<TodoRow, String> {
@@ -206,7 +211,19 @@ pub fn clip_to_todo(state: State<AppState>, id: i64) -> Result<TodoRow, String> 
     let input = store::TodoInput {
         kind: row.kind.clone(),
         title: None, // 默认标题：todos_add 内取 text 前 50 字
-        content: row.html_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()),
+        // 内容区全文：富文本取 html；纯文本取全文（转义后按行包 <div>，编辑区可完整显示/编辑）
+        content: Some(match row.html_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+            Some(html) => html,
+            None => row
+                .text
+                .as_deref()
+                .unwrap_or("")
+                .split("\r\n")
+                .flat_map(|l| l.split("\n"))
+                .map(|l| format!("<div>{}</div>", esc_html(l)))
+                .collect::<Vec<_>>()
+                .join(""),
+        }),
         text: row.text.clone(),
         image_path: row.image_path.clone(),
         files_json: row.files_json.clone(),
