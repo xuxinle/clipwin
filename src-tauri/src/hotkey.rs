@@ -1,6 +1,6 @@
 //! 热键唤出与回贴模块（M1）
 //! - Ctrl+Alt+Q 全局热键唤出主窗口（光标处定位）
-//! - 回贴：记录唤出前的前台窗口 → 写剪贴板 → SetForegroundWindow 恢复 → SendInput Ctrl+V
+//! - 回贴：记录唤出前的前台窗口 → 写剪贴板 → SetForegroundWindow 恢复 → 发送粘贴键（终端类目标自适应 Shift+Insert，其余 Ctrl+V）
 //! - 失焦自动隐藏
 
 use tauri::AppHandle;
@@ -12,7 +12,8 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_INSERT,
+    VK_SHIFT, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetSystemMetrics, SetForegroundWindow, SetWindowPos,
@@ -25,6 +26,78 @@ use std::sync::Mutex;
 
 /// 唤出前的目标窗口（回贴目标）。None = 唤出时无前台窗口
 pub static LAST_FG: Mutex<Option<isize>> = Mutex::new(None);
+
+/// 终端/IDE 进程名单：这些目标一律用 Shift+Insert 粘贴。
+/// 终端拦截或不透传合成的 Ctrl+V（VS Code 集成终端、conhost 等）；
+/// IDE 编辑器本身也默认支持 Shift+Insert（IntelliJ/VS Code keymap 均内置），统一安全
+const TERMINAL_EXES: &[&str] = &[
+    // 原生终端
+    "windowsterminal.exe", "openconsole.exe", "conhost.exe", "cmd.exe",
+    "powershell.exe", "pwsh.exe", "mintty.exe", "alacritty.exe", "wezterm-gui.exe",
+    "tabby.exe", "kitty.exe", "hyper.exe", "warp.exe",
+    // SSH / 远程终端
+    "putty.exe", "termius.exe", "xshell.exe", "mobaxterm.exe", "securecrt.exe", "electerm.exe",
+    // VS Code 家族（集成终端拦截 Ctrl+V，编辑器支持 Shift+Insert）
+    "code.exe", "code - insiders.exe", "vscodium.exe", "codium.exe", "cursor.exe", "windsurf.exe", "trae.exe",
+    // JetBrains 家族（终端同理，编辑器 Shift+Insert 内置绑定 Paste）
+    "idea64.exe", "pycharm64.exe", "webstorm64.exe", "goland64.exe", "clion64.exe",
+    "rider64.exe", "datagrip64.exe", "rubymine64.exe", "phpstorm64.exe", "studio64.exe",
+];
+
+/// 浏览器进程名单：Web 终端（code-server / ttyd / WebSSH 等）跑在浏览器里，进程名区分不了，看标题
+const BROWSER_EXES: &[&str] = &[
+    "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe",
+];
+
+/// 浏览器标题里的终端关键词（小写匹配）：Web 终端标签页标题通常含这些
+const BROWSER_TITLE_KEYS: &[&str] = &[
+    "terminal", "终端", "命令提示符", "命令行", "powershell", "pwsh", "bash",
+    "ssh", "shell", "ttyd", "webssh", "xterm", "code-server", "visual studio code",
+    "vscode", "控制台",
+];
+
+/// 回贴目标是否终端类：是则发 Shift+Insert（终端世界通用粘贴键），否则 Ctrl+V。
+/// 启发式 = 终端/IDE 进程名单 + 浏览器标题关键词（Web 终端场景）；误判代价低——
+/// 浏览器/编辑器里 Shift+Insert 同样触发粘贴，且剪贴板内容已写入，手动 Ctrl+V 也能补救
+fn target_wants_shift_insert(hwnd: windows::Win32::Foundation::HWND) -> bool {
+    use windows::core::PWSTR;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        // 1. HWND → PID → 进程名（小写）
+        let mut pid = 0u32;
+        windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return false;
+        }
+        let exe = (|| -> Option<String> {
+            use windows::Win32::Foundation::CloseHandle;
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let mut buf = [0u16; 512];
+            let mut len = buf.len() as u32;
+            let r = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+            let _ = CloseHandle(h);
+            r.then(|| {
+                let full = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
+                full.rsplit('\\').next().unwrap_or("").to_string()
+            })
+        })();
+        let Some(exe) = exe else { return false };
+
+        // 2. 名单判定
+        if TERMINAL_EXES.contains(&exe.as_str()) {
+            return true;
+        }
+        if BROWSER_EXES.contains(&exe.as_str()) {
+            let mut buf = [0u16; 512];
+            let n = windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf);
+            let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]).to_lowercase();
+            return BROWSER_TITLE_KEYS.iter().any(|k| title.contains(k));
+        }
+        false
+    }
+}
 
 /// 当前窗口（本进程主窗口）是否仍是前台：拖动标题栏时 WebView2 子窗口
 /// 焦点切换会发 Focused(false)，但主窗口仍在最前——不算真正失焦，不应隐藏
@@ -200,7 +273,7 @@ unsafe fn force_foreground(hwnd: windows::Win32::Foundation::HWND) {
     }
 }
 
-/// 回贴：写剪贴板 → 恢复目标窗口前台 → SendInput Ctrl+V
+/// 回贴：写剪贴板 → 恢复目标窗口前台 → 发送粘贴键（终端类目标自适应 Shift+Insert）
 pub fn paste_to_last_fg(app: &AppHandle, text: &str) -> Result<(), String> {
     // 1. 写剪贴板（自写自听跳过）
     write_text(text)?;
@@ -219,8 +292,8 @@ pub fn paste_to_last_fg(app: &AppHandle, text: &str) -> Result<(), String> {
             let _ = SetForegroundWindow(hwnd);
             // 等目标窗口就绪
             std::thread::sleep(std::time::Duration::from_millis(30));
-            // 3. SendInput Ctrl+V
-            send_ctrl_v();
+            // 3. 发送粘贴键：终端类目标自适应 Shift+Insert，其余 Ctrl+V
+            send_paste_key(target_wants_shift_insert(hwnd));
         }
         Ok(())
     } else {
@@ -228,7 +301,7 @@ pub fn paste_to_last_fg(app: &AppHandle, text: &str) -> Result<(), String> {
     }
 }
 
-/// 图片回贴：读 .dib 文件 → 写 CF_DIBV5 → 恢复前台 → Ctrl+V（待办图片条目用）
+/// 图片回贴：读 .dib 文件 → 写 CF_DIBV5 → 恢复前台 → 发送粘贴键（终端类目标自适应 Shift+Insert）
 pub fn paste_image_to_last_fg(app: &AppHandle, dib_path: &str) -> Result<(), String> {
     let dib = std::fs::read(dib_path).map_err(|e| format!("读图片失败: {e}"))?;
     unsafe {
@@ -262,7 +335,7 @@ pub fn paste_image_to_last_fg(app: &AppHandle, dib_path: &str) -> Result<(), Str
             let hwnd = windows::Win32::Foundation::HWND(hwnd_val as *mut _);
             let _ = SetForegroundWindow(hwnd);
             std::thread::sleep(std::time::Duration::from_millis(30));
-            send_ctrl_v();
+            send_paste_key(target_wants_shift_insert(hwnd));
         }
         Ok(())
     } else {
@@ -298,7 +371,13 @@ pub fn write_text(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-unsafe fn send_ctrl_v() {
+/// 发送粘贴键：终端类目标合成 Shift+Insert（终端通用粘贴键），其余 Ctrl+V
+unsafe fn send_paste_key(shift_insert: bool) {
+    let (mod_vk, key_vk) = if shift_insert {
+        (VK_SHIFT, VK_INSERT)
+    } else {
+        (VK_CONTROL, VK_V)
+    };
     let mk = |vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY, up: bool| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -312,14 +391,71 @@ unsafe fn send_ctrl_v() {
         },
     };
     let seq = [
-        mk(VK_CONTROL, false),
-        mk(VK_V, false),
-        mk(VK_V, true),
-        mk(VK_CONTROL, true),
+        mk(mod_vk, false),
+        mk(key_vk, false),
+        mk(key_vk, true),
+        mk(mod_vk, true),
     ];
     let sent = SendInput(&seq, std::mem::size_of::<INPUT>() as i32);
     if sent != 4 {
         eprintln!("[clipwin] SendInput 不完整: {sent}/4");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 真实窗口枚举验证启发式：打印每个可见顶层窗口的 进程名/标题/判定结果
+    #[test]
+    fn dump_detection_matrix() {
+        use windows::core::BOOL;
+        use windows::Win32::Foundation::{HWND, LPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetWindowTextW, IsWindowVisible,
+        };
+        // 枚举回调只能用 extern "system" fn，用 thread_local 收集
+        thread_local! {
+            static REPORT: std::cell::RefCell<Vec<(bool, String, String)>> =
+                std::cell::RefCell::new(Vec::new());
+        }
+        unsafe extern "system" fn cb(hwnd: HWND, _: LPARAM) -> BOOL {
+            if IsWindowVisible(hwnd).as_bool() {
+                let mut buf = [0u16; 256];
+                let n = GetWindowTextW(hwnd, &mut buf);
+                let title = String::from_utf16_lossy(&buf[..n as usize]);
+                if !title.trim().is_empty() {
+                    let mut pid = 0u32;
+                    windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                    let exe = (|| -> Option<String> {
+                        use windows::core::PWSTR;
+                        use windows::Win32::System::Threading::{
+                            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+                            PROCESS_QUERY_LIMITED_INFORMATION,
+                        };
+                        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+                        let mut b = [0u16; 512];
+                        let mut l = b.len() as u32;
+                        QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(b.as_mut_ptr()), &mut l)
+                            .ok()?;
+                        let full = String::from_utf16_lossy(&b[..l as usize]);
+                        Some(full.rsplit('\\').next().unwrap_or("").to_lowercase())
+                    })()
+                    .unwrap_or_default();
+                    REPORT.with(|r| r.borrow_mut().push((target_wants_shift_insert(hwnd), exe, title)));
+                }
+            }
+            true.into()
+        }
+        unsafe {
+            let _ = EnumWindows(Some(cb), LPARAM(0));
+            REPORT.with(|r| {
+                println!("判定矩阵（终端类→Shift+Insert / 其余→Ctrl+V）：");
+                for (hit, exe, title) in r.borrow().iter() {
+                    println!("  [{}] {:<24} | {}", if *hit { "X" } else { " " }, exe, title);
+                }
+            });
+        }
     }
 }
 
@@ -390,7 +526,7 @@ pub fn paste_rich_to_last_fg(app: &AppHandle, text: &str, html: Option<&str>) ->
             let hwnd = windows::Win32::Foundation::HWND(hwnd_val as *mut _);
             let _ = SetForegroundWindow(hwnd);
             std::thread::sleep(std::time::Duration::from_millis(30));
-            send_ctrl_v();
+            send_paste_key(target_wants_shift_insert(hwnd));
         }
         Ok(())
     } else {
