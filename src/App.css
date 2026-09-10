@@ -143,13 +143,20 @@ header input:focus { border-color: #6868e0; box-shadow: 0 0 0 3px rgba(104,104,2
 .trow .timg {
   max-width: 100%; max-height: 160px; border-radius: 6px; border: 1px solid #e2e2ea; display: block; margin-top: 4px;
 }
-.trow .tacts { flex: none; display: flex; gap: 6px; opacity: 0; max-width: 200px; }
-.trow:hover .tacts { opacity: 1; }
+.trow .tacts { flex: none; display: flex; gap: 4px; opacity: 0; max-width: 200px; align-items: center; }
+.trow:hover .tacts, .trow.sel .tacts { opacity: 1; }
 .trow .tacts button {
   height: 24px; padding: 0 8px; border: 1px solid #d8d8e2; border-radius: 6px;
   background: #fff; font-size: 11px; cursor: pointer; white-space: nowrap;
 }
 .trow .tacts button:hover { background: #eeeffa; }
+/* 图标按钮：正方形、居中、无文字基线干扰 */
+.trow .tacts .icon-btn {
+  width: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; line-height: 1;
+}
+/* 删除：危险动作单独配色，悬停变红给出预示 */
+.trow .tacts .del-btn:hover { background: #ffe9e6; border-color: #efb4ab; }
 .trow .tmeta { font-size: 11px; color: #9a9aa6; margin-top: 2px; }
 .todo-foot {
   display: flex; align-items: center; justify-content: space-between;

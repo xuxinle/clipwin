@@ -729,13 +729,17 @@ export default function App() {
         </div>
         <div className="tacts">
           <button
+            className="icon-btn"
             onClick={(e) => {
               if (dueFor === t.id) setDueFor(null);
               else { setDueAnchor(e.currentTarget.getBoundingClientRect()); setDueFor(t.id); }
             }}
             title="设置截止日">📅</button>
-          <button onClick={() => openEditor(t)} title="编辑详情（双击行）">编辑</button>
-          <button onClick={() => deleteTodo(t.id)} title="删除（5 秒内可撤销）">删除</button>
+          {/* 编辑不再占按钮：双击行 / Enter 即可进详情，行内只留图标动作 */}
+          <button
+            className="icon-btn del-btn"
+            onClick={() => deleteTodo(t.id)}
+            title="删除（5 秒内可撤销）">🗑</button>
         </div>
         {dueFor === t.id && dueAnchor && (
           <CalendarPopover
