@@ -124,6 +124,14 @@ interface CtxMenu { x: number; y: number; clipId: number; }
 
 const TXT_LEN = 120; // 超过此长度截断 + 展开按钮
 
+/** 热键唤出时的默认预选行下标：1 = 列表第二项。
+ *
+ * 为什么不是首项（下标 0）：回贴会把用过的条目置顶，所以下次唤出时
+ * 下标 0 往往正是上一次刚回贴过的内容；第二项才是高频复用项。
+ * 预选它可省掉一次 ↓ —— 唤出后直接 Enter 即回贴，减少一次按键。
+ * 列表不足 2 项时自动回退到首项（不会越界）。 */
+const POPUP_SELECT_INDEX = 1;
+
 export default function App() {
   // ---- 视图状态 ----
   const [tab, setTab] = useState<"clips" | "todos" | "settings">("clips");
@@ -166,11 +174,18 @@ export default function App() {
   const [hkTInput, setHkTInput] = useState("");
   const [hkTRecording, setHkTRecording] = useState(false);
 
-  async function refresh(q: string) {
+  /** preferIdx 非空时强制预选该下标（热键唤出用），否则沿用旧选中/回退首项 */
+  async function refresh(q: string, preferIdx?: number) {
     try {
       const r = await invoke<ClipRow[]>("search", { query: q, limit: 10000 });
       setRows(r);
-      setSelId((prev) => (prev != null && r.some((x) => x.id === prev) ? prev : r[0]?.id ?? null));
+      if (preferIdx != null && r.length > 0) {
+        const i = Math.min(preferIdx, r.length - 1);
+        setSelId(r[i].id);
+        virtualizer.scrollToIndex(i, { align: "auto" });
+      } else {
+        setSelId((prev) => (prev != null && r.some((x) => x.id === prev) ? prev : r[0]?.id ?? null));
+      }
         const s = await invoke<{ count: number }>("stats");
       setStats(s);
     } catch (e) {
@@ -215,7 +230,7 @@ export default function App() {
       const t = ev.payload?.tab === "todos" ? "todos" : "clips";
       if (t !== tabRef.current) setTab(t);
       // 热键唤出必刷新：回贴置顶/新增立即反映（visibilitychange 在 WebView2 不可靠）
-      refresh(t === "clips" ? queryRef.current : "");
+      refresh(t === "clips" ? queryRef.current : "", t === "clips" ? POPUP_SELECT_INDEX : undefined);
       if (t === "todos") refreshTodos();
       if (t === "clips") focusInput();
       else todoInputRef.current?.focus();
@@ -223,8 +238,8 @@ export default function App() {
     // 窗口从隐藏到可见（托盘/热键唤出）：重新聚焦
     const onVis = () => {
       if (document.visibilityState === "visible") {
-        // 每次唤出重拉列表（回贴置顶/新增条目立即反映）
-        refresh(queryRef.current);
+        // 每次唤出重拉列表（回贴置顶/新增条目立即反映）；剪贴板页预选第二项
+        refresh(queryRef.current, tabRef.current === "clips" ? POPUP_SELECT_INDEX : undefined);
         if (tabRef.current === "clips") focusInput();
         else todoInputRef.current?.focus();
       }
