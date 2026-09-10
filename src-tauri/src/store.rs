@@ -255,6 +255,12 @@ fn now_ts_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 转义 SQL LIKE 模式中的通配符（ESCAPE '\' 配合使用）：
+/// 用户输入里的 % _ \ 按字面匹配，否则搜 "50%" 会被当通配符。
+fn sql_like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
 impl Store {
     /// 插入一条事件（去重：相同 hash 更新时间戳置顶）
     pub fn insert(&mut self, ev: &ClipEvent) -> rusqlite::Result<i64> {
@@ -511,7 +517,11 @@ pub fn touch(&mut self, id: i64) -> rusqlite::Result<()> {
     /// 待办列表（M3：pinned→done→priority→due_at→ts 多级排序 + 筛选）
     /// filter: open=未完成（默认） all=全部 today=今日截止 overdue=逾期 done=已完成
     /// tag: 非空则只留包含该标签的条目（tags 为 JSON 数组文本，用 LIKE 匹配）
-    pub fn todos_list(&self, filter: &str, tag: &str, include_done: bool) -> rusqlite::Result<Vec<TodoRow>> {
+    /// query: 非空则模糊匹配 标题/内容/纯文本/标签（大小写不敏感）
+    /// sort: smart=智能排序（默认） due=按截止日 prio=按优先级 created=按创建时间
+    pub fn todos_list(
+        &self, filter: &str, tag: &str, include_done: bool, query: &str, sort: &str,
+    ) -> rusqlite::Result<Vec<TodoRow>> {
         let mut conds: Vec<String> = Vec::new();
         match filter {
             "all" => {}
@@ -533,16 +543,38 @@ pub fn touch(&mut self, id: i64) -> rusqlite::Result<()> {
         }
         if !tag.is_empty() {
             // tags 存 JSON 数组文本：["工作","急"]——按完整成员精确匹配
-            let esc: String = tag.chars().filter(|c| *c != '"' && *c != '\'').collect();
-            let pat = format!("%\"{}\"%", esc);
-            conds.push(format!("tags LIKE '{}'", pat));
+            let esc = sql_like_escape(&tag);
+            conds.push(format!("tags LIKE '%\"{}\"%' ESCAPE '\\'", esc));
+        }
+        if !query.trim().is_empty() {
+            // 模糊搜索：标题 / 富文本内容 / 纯文本 / 标签（LIKE 转义防 % _ 通配）
+            let q = sql_like_escape(query.trim());
+            let pat = format!("%{}%", q.to_lowercase());
+            conds.push(format!(
+                "(LOWER(COALESCE(title,'')) LIKE '{p}' ESCAPE '\\' \
+                 OR LOWER(COALESCE(content,'')) LIKE '{p}' ESCAPE '\\' \
+                 OR LOWER(COALESCE(text,'')) LIKE '{p}' ESCAPE '\\' \
+                 OR LOWER(COALESCE(tags,'')) LIKE '{p}' ESCAPE '\\')",
+                p = pat
+            ));
         }
         let mut sql = format!("SELECT {TODO_COLS} FROM todos");
         if !conds.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&conds.join(" AND "));
         }
-        sql.push_str(" ORDER BY pinned DESC, done ASC, priority DESC, due_at IS NULL, due_at ASC, ts DESC");
+        // 排序模式：置顶与「未完成优先」恒为第一梯队，其余按模式；末位一律 ts DESC 保稳定
+        sql.push_str(" ORDER BY pinned DESC, done ASC, ");
+        match sort {
+            // 按截止日：有日期的先排，日期近的在前
+            "due" => sql.push_str("due_at IS NULL, due_at ASC, priority DESC, ts DESC"),
+            // 按优先级：高优先级在前
+            "prio" => sql.push_str("priority DESC, due_at IS NULL, due_at ASC, ts DESC"),
+            // 按创建时间：最新在前
+            "created" => sql.push_str("ts DESC"),
+            // smart（默认）：截止日紧迫度 + 优先级综合
+            _ => sql.push_str("priority DESC, due_at IS NULL, due_at ASC, ts DESC"),
+        }
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_todo_row)?;
         Ok(rows.filter_map(|x| x.ok()).collect())
@@ -556,6 +588,7 @@ pub fn touch(&mut self, id: i64) -> rusqlite::Result<()> {
         let today = n(format!("SELECT COUNT(*) FROM todos WHERE done = 0 AND due_at IS NOT NULL AND due_at >= {start} AND due_at < {end}"));
         let overdue = n(format!("SELECT COUNT(*) FROM todos WHERE done = 0 AND due_at IS NOT NULL AND due_at < {start}"));
         let done = n("SELECT COUNT(*) FROM todos WHERE done = 1".into());
+        let done_today = n(format!("SELECT COUNT(*) FROM todos WHERE done = 1 AND done_at >= {start}"));
         let mut stmt = self.conn.prepare("SELECT tags FROM todos WHERE done = 0")?;
         let rows: Vec<String> = stmt.query_map([], |r| r.get(0))?.filter_map(|x| x.ok()).collect();
         let mut tags: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
@@ -566,7 +599,29 @@ pub fn touch(&mut self, id: i64) -> rusqlite::Result<()> {
                 }
             }
         }
-        Ok(serde_json::json!({ "open": open, "today": today, "overdue": overdue, "done": done, "tags": tags }))
+        Ok(serde_json::json!({ "open": open, "today": today, "overdue": overdue, "done": done, "done_today": done_today, "tags": tags }))
+    }
+
+    /// 批量删除待办（按 id）：blob 走引用计数，未被其他条目引用才删物理文件。
+    /// 单条删除复用本方法（ids 长度为 1），前后端只维护一条删除路径。
+    pub fn todos_delete_many(&mut self, ids: &[i64]) -> rusqlite::Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let ph = vec!["?"; ids.len()].join(",");
+        // 先收集附件路径，删行后再按引用计数清理
+        let victims: Vec<Option<String>> = {
+            let sql = format!("SELECT image_path FROM todos WHERE id IN ({ph})");
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| r.get(0))?;
+            rows.filter_map(|x| x.ok()).collect()
+        };
+        let sql = format!("DELETE FROM todos WHERE id IN ({ph})");
+        let n = self.conn.execute(&sql, rusqlite::params_from_iter(ids.iter()))?;
+        for p in victims.into_iter().flatten() {
+            self.unlink_blob_if_unreferenced(&p);
+        }
+        Ok(n)
     }
 
     pub fn todos_toggle(&mut self, id: i64) -> rusqlite::Result<bool> {

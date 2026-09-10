@@ -121,8 +121,8 @@ header input:focus { border-color: #6868e0; box-shadow: 0 0 0 3px rgba(104,104,2
 .todo-add button:hover { background: #5555cc; }
 .todo-list { flex: 1; overflow-y: auto; background: #fff; }
 /* 列表行内的弹出层（日历）不被滚动容器裁切：容器允许可见溢出，
-   弹窗 z-index 压过相邻行 */
-.todo-list > .trow { position: relative; }
+   弹窗 z-index 压过相邻行。行现嵌套在 .tgroup 内，故用后代选择器 */
+.todo-list .trow { position: relative; }
 .trow[data-calopen="1"] { z-index: 500; background: #fff; }
 .trow[data-calopen="1"]::after { content: ""; position: absolute; inset: 0; background: #fff; z-index: -1; }
 .trow {
@@ -380,3 +380,97 @@ button { transition: background .12s ease, color .12s ease, border-color .12s ea
 
 /* tacts 的日历按钮模式（替代旧 duepick） */
 .tacts { position: relative; }
+
+/* ================= 待办模块 v0.1.7：统计条 / 搜索排序 / 分组 / 撤销条 ================= */
+
+/* 统计条：未完成数 + 逾期/今日徽标 + 今日完成进度条 */
+.todo-stat {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 12px 8px; font-size: 12px; color: #6b6b76;
+}
+.todo-stat .ts-num { font-size: 17px; font-weight: 600; color: #4a4a86; line-height: 1; }
+.todo-stat .ts-label { margin-left: -4px; }
+.todo-stat .ts-spacer { flex: 1; }
+.todo-stat .ts-badge {
+  padding: 1px 8px; border-radius: 9px; font-size: 11px; font-weight: 500;
+}
+.todo-stat .ts-badge.od { background: #ffe9e6; color: #c8382a; }
+.todo-stat .ts-badge.td { background: #fff3e0; color: #c07800; }
+.todo-stat .ts-pct { font-size: 11px; color: #9a9aa6; }
+.todo-stat .ts-bar {
+  width: 90px; height: 5px; border-radius: 3px; background: #ececf2; overflow: hidden; flex: none;
+}
+.todo-stat .ts-bar i {
+  display: block; height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #7c6cf0, #6868e0);
+  transition: width .3s cubic-bezier(.4, 0, .2, 1);
+}
+
+/* 搜索 + 排序工具栏 */
+.todo-tools { display: flex; gap: 8px; padding: 0 12px 8px; }
+.todo-search {
+  flex: 1; min-width: 0; height: 30px; padding: 0 10px;
+  border: 1px solid #e2e2ea; border-radius: 7px;
+  font-size: 12px; outline: none; background: #fafafc;
+}
+.todo-search:focus { border-color: #a9a2ea; background: #fff; }
+.todo-sort {
+  height: 30px; padding: 0 6px; border: 1px solid #e2e2ea; border-radius: 7px;
+  font-size: 12px; color: #55555f; background: #fafafc; outline: none; cursor: pointer; flex: none;
+}
+
+/* 分组：标题行可点击折叠 */
+.tgroup { display: block; }
+.tgroup-hd {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 12px; cursor: pointer; user-select: none;
+  background: #f7f7fb; border-bottom: 1px solid #ececf2;
+  font-size: 11px; color: #6b6b76; position: sticky; top: 0; z-index: 3;
+}
+.tgroup-hd:hover { background: #f0f0f8; }
+.tgroup-hd .tg-caret { width: 10px; font-size: 10px; color: #a0a0ac; }
+.tgroup-hd .tg-label { font-weight: 600; letter-spacing: .2px; }
+.tgroup-hd .tg-count {
+  min-width: 18px; height: 15px; line-height: 15px; text-align: center;
+  padding: 0 5px; border-radius: 8px; background: #e6e6ef; color: #6b6b76; font-size: 10px;
+}
+.tgroup-hd.collapsed { margin-bottom: 0; }
+
+/* 键盘/鼠标选中行 */
+.trow.sel { background: #eae8fc; box-shadow: inset 3px 0 0 #7c6cf0; }
+.trow.sel:hover { background: #e5e2fa; }
+.trow:focus { outline: none; }
+.trow:focus-visible { box-shadow: inset 3px 0 0 #7c6cf0; }
+
+/* 空状态（区分「无数据」与「无匹配」） */
+.todo-empty { padding: 48px 20px; }
+.todo-empty .ee-t { font-size: 14px; color: #7a7a86; font-weight: 600; margin-bottom: 6px; }
+.todo-empty .ee-s { font-size: 12px; color: #a8a8b4; }
+.todo-empty .ee-tips {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 16px; font-size: 11px; color: #a8a8b4;
+}
+.todo-empty .ee-tips code {
+  background: #f2f2f8; border: 1px solid #e6e6ef; border-radius: 4px;
+  padding: 1px 5px; font-size: 11px; color: #6b6b9a;
+}
+
+/* 底部条：快捷键提示 / 清除已完成 / 撤销条 */
+.todo-foot .foot-hint { font-size: 10.5px; color: #a8a8b4; letter-spacing: .1px; }
+.todo-foot .foot-clear {
+  height: 24px; padding: 0 10px; border: 1px solid #d8d8e2; border-radius: 6px;
+  background: #fff; font-size: 11px; cursor: pointer; margin-left: 8px; color: #55555f;
+}
+.todo-foot .foot-clear:hover:not(:disabled) { background: #eeeffa; border-color: #c5c5d8; }
+.todo-foot .foot-clear:disabled { opacity: .45; cursor: default; }
+.undo-bar {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  animation: fadeIn .15s ease;
+}
+.undo-bar .ub-text { font-size: 12px; color: #44444e; font-weight: 500; }
+.undo-bar .ub-hint { font-size: 10.5px; color: #a8a8b4; }
+.undo-bar .undo-btn {
+  height: 24px; padding: 0 12px; border: none; border-radius: 6px;
+  background: #6868e0; color: #fff; font-size: 11px; cursor: pointer; font-weight: 500;
+}
+.undo-bar .undo-btn:hover { background: #5555cc; }

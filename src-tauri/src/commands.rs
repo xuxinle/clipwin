@@ -115,11 +115,14 @@ pub fn todos_add(state: State<AppState>, input: store::TodoInput) -> Result<Todo
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 pub fn todos_list(
     state: State<AppState>,
     filter: Option<String>,
     tag: Option<String>,
     include_done: Option<bool>,
+    query: Option<String>,
+    sort: Option<String>,
 ) -> Result<Vec<TodoRow>, String> {
     state
         .store
@@ -129,8 +132,16 @@ pub fn todos_list(
             filter.as_deref().unwrap_or("open"),
             tag.as_deref().unwrap_or(""),
             include_done.unwrap_or(false),
+            query.as_deref().unwrap_or(""),
+            sort.as_deref().unwrap_or("smart"),
         )
         .map_err(|e| e.to_string())
+}
+
+/// 批量删除待办（返回删除条数）；单条删除也走这里，前端可先隐藏再延迟提交以实现撤销
+#[tauri::command]
+pub fn todos_delete_many(state: State<AppState>, ids: Vec<i64>) -> Result<usize, String> {
+    state.store.lock().map_err(|e| e.to_string())?.todos_delete_many(&ids).map_err(|e| e.to_string())
 }
 
 /// 待办统计（chips 计数）

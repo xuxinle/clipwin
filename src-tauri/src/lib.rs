@@ -210,6 +210,7 @@ pub fn run() {
             commands::todos_toggle,
             commands::todos_update_full,
             commands::todos_delete,
+            commands::todos_delete_many,
             commands::todos_get,
             commands::clip_to_todo,
             commands::todo_paste_from_clipboard,

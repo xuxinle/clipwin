@@ -42,10 +42,38 @@ interface TodoStats {
   today: number;
   overdue: number;
   done: number;
+  done_today: number;
   tags: Record<string, number>;
 }
 
 const KIND_ICON: Record<string, string> = { text: "📝", image: "🖼️", files: "📁" };
+
+/** 列表分组：key 稳定（用于折叠状态记忆），顺序即展示顺序 */
+const GROUP_ORDER = ["pin", "overdue", "today", "tomorrow", "later", "nodate", "done"] as const;
+type GroupKey = (typeof GROUP_ORDER)[number];
+const GROUP_LABEL: Record<GroupKey, string> = {
+  pin: "📌 置顶", overdue: "⚠️ 逾期", today: "🔥 今天",
+  tomorrow: "🌤 明天", later: "📅 后续", nodate: "⏳ 无日期", done: "✅ 已完成",
+};
+
+/** 按状态把（后端已排序的）待办切成分组，组内保持后端顺序 */
+function groupTodos(rows: TodoRow[]): { key: GroupKey; label: string; items: TodoRow[] }[] {
+  const now = new Date();
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const b: Record<GroupKey, TodoRow[]> = { pin: [], overdue: [], today: [], tomorrow: [], later: [], nodate: [], done: [] };
+  for (const t of rows) {
+    if (t.done) { b.done.push(t); continue; }
+    if (t.pinned) { b.pin.push(t); continue; }
+    if (t.due_at == null) { b.nodate.push(t); continue; }
+    const d = new Date(t.due_at);
+    const diff = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - today0) / 86_400_000);
+    if (diff < 0) b.overdue.push(t);
+    else if (diff === 0) b.today.push(t);
+    else if (diff === 1) b.tomorrow.push(t);
+    else b.later.push(t);
+  }
+  return GROUP_ORDER.filter((k) => b[k].length > 0).map((k) => ({ key: k, label: GROUP_LABEL[k], items: b[k] }));
+}
 
 /** 相对时间：刚刚/N 分钟前/N 小时前/昨天/M-D */
 function relTime(ts: number): string {
@@ -160,6 +188,17 @@ export default function App() {
   const [todoInput, setTodoInput] = useState("");
   const [filter, setFilter] = useState<"open" | "today" | "overdue" | "done" | "all">("open");
   const [tagFilter, setTagFilter] = useState("");
+  const [todoQuery, setTodoQuery] = useState(""); // 待办搜索（标题/内容/标签）
+  const [todoSort, setTodoSort] = useState<"smart" | "due" | "prio" | "created">("smart");
+  const [todoSelId, setTodoSelId] = useState<number | null>(null); // 键盘选中行
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({}); // 分组折叠状态
+  // 延迟删除：先在前端隐藏并进入待提交队列，5 秒内可撤销；超时/隐藏窗口才真正落库
+  const [pendingDel, setPendingDel] = useState<TodoRow[]>([]);
+  const [undoBar, setUndoBar] = useState(0); // >0 时展示「已删除 N 项 · 撤销」
+  const delTimer = useRef<number | undefined>(undefined);
+  const pendingDelRef = useRef<TodoRow[]>([]);
+  const todoQueryTimer = useRef<number | undefined>(undefined);
+  const refreshTodosRef = useRef<() => void>(() => {});
   const [editor, setEditor] = useState<TodoEditDraft | null>(null); // 待办编辑弹窗（null=关）
   const [dueFor, setDueFor] = useState<number | null>(null); // 列表行内日历（快捷改日期）
   const [dueAnchor, setDueAnchor] = useState<DOMRect | null>(null); // 日历锚点按钮屏幕坐标
@@ -195,14 +234,17 @@ export default function App() {
 
   async function refreshTodos() {
     try {
-      const r = await invoke<TodoRow[]>("todos_list", { filter, tag: tagFilter, includeDone: false });
+      const r = await invoke<TodoRow[]>("todos_list", { filter, tag: tagFilter, includeDone: false, query: todoQuery, sort: todoSort });
       setTodos(r);
+      // 键盘选中行：优先保留，其次落到首行（无选中且列表非空时）
+      setTodoSelId((prev) => (prev != null && r.some((x) => x.id === prev) ? prev : r[0]?.id ?? null));
       const s = await invoke<TodoStats>("todos_stats");
       setTodoStats(s);
     } catch (e) {
       setBench(`待办读取失败：${e}`);
     }
   }
+  refreshTodosRef.current = refreshTodos;
 
   // 唤出后聚焦：WebView2 窗口激活有时序竞争，多次重试直到焦点真正落到输入框
   function focusInput(retry = 0) {
@@ -260,7 +302,25 @@ export default function App() {
     return () => window.clearTimeout(queryTimer.current);
   }, [query]);
 
-  useEffect(() => { refreshTodos(); }, [filter, tagFilter]);
+  useEffect(() => { refreshTodos(); }, [filter, tagFilter, todoSort]);
+  // 搜索词防抖 150ms（与剪贴板搜索同一手感）
+  useEffect(() => {
+    window.clearTimeout(todoQueryTimer.current);
+    todoQueryTimer.current = window.setTimeout(() => refreshTodos(), 150);
+    return () => window.clearTimeout(todoQueryTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todoQuery]);
+
+  // 窗口隐藏 / 组件卸载时立即把「延迟删除」落库，避免撤销窗口内关窗导致删除丢失
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === "hidden") void flushDeletes(); };
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      void flushDeletes();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---- 剪贴板条目操作 ----
   async function pasteBack(id: number) {
@@ -336,8 +396,10 @@ export default function App() {
   }
 
   // ---- 待办操作 ----
-  /** 新建待办（标题模式）：标题为输入框内容（支持 #标签 !1!2!3 快捷语法），创建后弹编辑器补内容 */
-  async function addTodo() {
+  /** 新建待办（标题模式）：输入框内容，支持 #标签 !1!2!3 优先级快捷语法。
+   *  editAfter=false（默认，回车）→ 只创建，不打断录入手感；
+   *  editAfter=true（Ctrl+Enter）→ 创建后打开编辑器补详细内容。 */
+  async function addTodo(editAfter = false) {
     const raw = todoInput.trim();
     if (!raw) return;
     const { text, tags, priority } = parseQuick(raw);
@@ -352,8 +414,12 @@ export default function App() {
         },
       });
       setTodoInput("");
-      openEditor(row, true); // 新建即编辑：光标落在内容区
       refreshTodos();
+      if (editAfter) openEditor(row, true); // Ctrl+Enter：直接进详情编辑
+      else {
+        setTodoSelId(row.id); // 新条目成为选中行，可继续 ↓ 或回车编辑
+        todoInputRef.current?.focus();
+      }
     } catch (e) {
       setBench(`添加失败：${e}`);
     }
@@ -417,8 +483,58 @@ export default function App() {
   }
 
   async function deleteTodo(id: number) {
-    await invoke("todos_delete", { id });
-    refreshTodos();
+    const row = todos.find((t) => t.id === id);
+    if (row) stageDelete([row]);
+  }
+
+  // ---------- 延迟删除 + 撤销 ----------
+  // 删除不立即落库：先把行从列表中隐藏并进入待提交队列，5 秒内可点「撤销」恢复；
+  // 超时、切换筛选/Tab、窗口隐藏时才真正调 todos_delete_many。
+  // 好处：误删可救；附件不会被提前按引用计数清理。
+
+  /** 把待提交队列真正落库（幂等：队列空时什么都不做） */
+  async function flushDeletes() {
+    window.clearTimeout(delTimer.current);
+    const rows = pendingDelRef.current;
+    if (rows.length === 0) return;
+    pendingDelRef.current = [];
+    setPendingDel([]);
+    setUndoBar(0);
+    try {
+      await invoke("todos_delete_many", { ids: rows.map((r) => r.id) });
+    } catch (e) {
+      setBench(`删除失败：${e}`);
+    }
+    refreshTodosRef.current();
+  }
+
+  function stageDelete(rows: TodoRow[]) {
+    if (rows.length === 0) return;
+    const merged = [...pendingDelRef.current, ...rows];
+    pendingDelRef.current = merged;
+    setPendingDel(merged);
+    setUndoBar(merged.length);
+    window.clearTimeout(delTimer.current);
+    delTimer.current = window.setTimeout(() => { void flushDeletes(); }, 5000);
+  }
+
+  /** 撤销：清空待提交队列，条目从未离开数据库，直接恢复显示即可 */
+  function undoDelete() {
+    window.clearTimeout(delTimer.current);
+    pendingDelRef.current = [];
+    setPendingDel([]);
+    setUndoBar(0);
+  }
+
+  /** 一键清除已完成：同样走延迟删除（先取全部已完成行，不局限当前筛选） */
+  async function clearDone() {
+    try {
+      const all = await invoke<TodoRow[]>("todos_list", { filter: "done", tag: "", includeDone: false, query: "", sort: "smart" });
+      if (all.length === 0) return;
+      stageDelete(all);
+    } catch (e) {
+      setBench(`清除失败：${e}`);
+    }
   }
 
   async function cyclePriority(id: number, cur: number) {
@@ -451,11 +567,76 @@ export default function App() {
     }
   }
 
-  // 待办视图键盘：Enter 添加；Ctrl+V 从系统剪贴板收任意格式；Esc 隐藏（走 Rust 保存位置）
-  async function onTodoKeyDown(e: React.KeyboardEvent) {
-    if (e.nativeEvent.isComposing) return;
-    if (e.key === "Enter") { e.preventDefault(); addTodo(); }
-    else if (e.key === "Escape") { e.preventDefault(); await invoke("hide_window"); }
+  /** 待办视图键盘（文档级监听）：输入框内 Enter 添加；其余支持列表导航与快捷操作。
+   *
+   * 为何用文档级而非容器 onKeyDown：行被删除/完成后会从 DOM 移除，
+   * 焦点回落 body，容器上的处理器便再也收不到事件（键盘流中断）。 */
+  function onTodoKeyDown(e: KeyboardEvent) {
+    if (e.isComposing || e.defaultPrevented) return;
+    if (editor) return; // 编辑弹窗打开时交给弹窗自己处理
+    const el = e.target as HTMLElement | null;
+    const tag = el?.tagName;
+    const inField = !!el && (tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable);
+
+    // ① 添加框内 Enter：直接创建（不打断），Ctrl+Enter 创建并进详情
+    if (e.key === "Enter" && el === todoInputRef.current) {
+      e.preventDefault();
+      void addTodo(e.ctrlKey || e.metaKey);
+      return;
+    }
+    // ② Esc：优先撤销删除提示，否则隐藏窗口
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (undoBar > 0) undoDelete();
+      else if (dueFor != null) setDueFor(null);
+      else void invoke("hide_window");
+      return;
+    }
+    if (tag === "SELECT") return; // 排序下拉：不拦截
+    // ③ ↑↓：单行输入框/列表都用不到上下键，一律让给列表导航
+    if (e.key === "ArrowDown") { e.preventDefault(); moveTodoSel(1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); moveTodoSel(-1); return; }
+    if (inField) return; // 输入框内的空格/退格交给原生编辑
+
+    // ④ 列表快捷键
+    if (e.key === " " && todoSelId != null) {
+      e.preventDefault();
+      const idx = visibleTodos.findIndex((t) => t.id === todoSelId);
+      void toggleTodo(todoSelId);
+      // 完成项在「进行中」筛选下会移出视图，选中顺位下移，保持连续勾选手感
+      const next = visibleTodos[idx + 1] ?? visibleTodos[idx - 1];
+      if (next) setTodoSelId(next.id);
+    } else if ((e.key === "Delete" || e.key === "Backspace") && todoSelId != null) {
+      e.preventDefault();
+      deleteTodo(todoSelId);
+      moveTodoSel(1);
+    } else if (e.key === "Enter" && todoSelId != null) {
+      e.preventDefault();
+      const t = todos.find((x) => x.id === todoSelId);
+      if (t) openEditor(t);
+    }
+  }
+
+  // 待办 Tab 下挂文档级键盘监听；handler 经 ref 转发，避免每次渲染重绑
+  const todoKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  todoKeyRef.current = onTodoKeyDown;
+  useEffect(() => {
+    if (tab !== "todos") return;
+    const h = (e: KeyboardEvent) => todoKeyRef.current(e);
+    document.addEventListener("keydown", h, true);
+    return () => document.removeEventListener("keydown", h, true);
+  }, [tab]);
+
+  /** 键盘选中行上下移动（按当前可见分组展平后的顺序，跳过待删行） */
+  function moveTodoSel(delta: number) {
+    const flat = visibleTodos;
+    if (flat.length === 0) return;
+    const cur = flat.findIndex((t) => t.id === todoSelId);
+    const next = cur === -1
+      ? (delta > 0 ? 0 : flat.length - 1)
+      : Math.min(flat.length - 1, Math.max(0, cur + delta));
+    setTodoSelId(flat[next].id);
+    document.querySelector(`[data-tid="${flat[next].id}"]`)?.scrollIntoView({ block: "nearest" });
   }
 
   // 待办视图：窗口级 Ctrl+V（粘贴任意格式为待办）——仅输入框外生效；
@@ -476,6 +657,97 @@ export default function App() {
     return () => document.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+
+  // ---- 待办派生数据 ----
+  // 待删行立即从界面消失（但仍在 DB，可撤销）；分组基于可见行计算
+  const visibleTodos = todos.filter((t) => !pendingDel.some((p) => p.id === t.id));
+  const todoGroups = groupTodos(visibleTodos);
+  const searching = todoQuery.trim().length > 0;
+  // 智能排序 = 分组视图（按紧迫度分组）；选了其他排序则改平铺，否则排序会被分组淹没
+  const useGroups = todoSort === "smart";
+  // 今日完成进度：已完成(今日) / (已完成(今日) + 未完成)
+  const doneToday = todoStats?.done_today ?? 0;
+  const openCnt = todoStats?.open ?? 0;
+  const progress = doneToday + openCnt > 0 ? Math.round((doneToday / (doneToday + openCnt)) * 100) : 0;
+
+  /** 待办单行渲染（分组列表共用）；选中行走高亮，鼠标悬停也同步选中便于键盘接力 */
+  function todoRow(t: TodoRow) {
+    const tags: string[] = safeJson(t.tags);
+    const hasContent = !!t.content && htmlToText(t.content).length > 0;
+    const sel = todoSelId === t.id;
+    return (
+      <div
+        key={t.id}
+        data-tid={t.id}
+        className={`trow${t.done ? " done" : ""}${sel ? " sel" : ""}`}
+        data-calopen={dueFor === t.id ? "1" : undefined}
+        tabIndex={-1}
+        onMouseEnter={() => setTodoSelId(t.id)}
+        onClick={(e) => {
+          // 点击行就地把焦点移到行上：否则焦点留在搜索/添加框，Del、空格会被当成文本编辑吞掉
+          setTodoSelId(t.id);
+          if (e.detail === 1) (e.currentTarget as HTMLElement).focus();
+        }}
+        onDoubleClick={() => openEditor(t)}
+      >
+        <input type="checkbox" className="cb" checked={t.done} onChange={() => toggleTodo(t.id)} />
+        <div className="tbody">
+          <div className="trow-main">
+            <span
+              className={t.pinned ? "pin on" : "pin"}
+              onClick={() => togglePin(t.id)}
+              title={t.pinned ? "取消置顶" : "置顶"}
+            >📌</span>
+            <span
+              className={"prio p" + t.priority}
+              onClick={() => cyclePriority(t.id, t.priority)}
+              title={`优先级：${PRIO_NAME[t.priority]}（点击切换）`}
+            >{PRIO_ICON[t.priority]}</span>
+            {t.due_at != null && !t.done && (() => {
+              const { label, cls } = dueLabel(t.due_at);
+              return <span className={cls}>{label}</span>;
+            })()}
+            <span className="ttitle" title="双击编辑详情">
+              {t.kind === "image" && t.image_path
+                ? <img className="timg" src={convertFileSrc(t.image_path.replace(/\.dib$/, ".png"))} alt="待办图片" onClick={(e) => { e.stopPropagation(); setViewerImg((e.target as HTMLImageElement).src); }} />
+                : null}
+              <span className="ttxt">{t.title || t.text || ""}</span>
+              {hasContent && <span className="tcontent-dot" title="有详细内容">☰</span>}
+            </span>
+          </div>
+          <div className="tmeta">
+            {tags.length > 0 && (
+              <span className="tagrow">
+                {tags.map((g) => (
+                  <span key={g} className="tag" onClick={() => setTagFilter(g)}>#{g}</span>
+                ))}
+              </span>
+            )}
+            {KIND_ICON[t.kind] ?? "❔"} {t.kind !== "text" && `${t.kind} · `}{relTime(t.ts)}
+            {t.done && t.done_at && ` · 完成 ${new Date(t.done_at).toLocaleTimeString()}`}
+          </div>
+        </div>
+        <div className="tacts">
+          <button
+            onClick={(e) => {
+              if (dueFor === t.id) setDueFor(null);
+              else { setDueAnchor(e.currentTarget.getBoundingClientRect()); setDueFor(t.id); }
+            }}
+            title="设置截止日">📅</button>
+          <button onClick={() => openEditor(t)} title="编辑详情（双击行）">编辑</button>
+          <button onClick={() => deleteTodo(t.id)} title="删除（5 秒内可撤销）">删除</button>
+        </div>
+        {dueFor === t.id && dueAnchor && (
+          <CalendarPopover
+            value={t.due_at != null ? new Date(t.due_at).toISOString().slice(0, 10) : null}
+            anchorRect={dueAnchor}
+            onPick={(ymd) => setDue(t.id, ymd)}
+            onClose={() => setDueFor(null)}
+          />
+        )}
+      </div>
+    );
+  }
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -576,17 +848,50 @@ export default function App() {
 
       {tab === "todos" && (
         <div className="todo-wrap">
+          {/* 快速添加：回车直接创建（不弹窗打断），Ctrl+Enter 创建并进详情 */}
           <div className="todo-add">
             <input
               ref={todoInputRef}
               value={todoInput}
               onChange={(e) => setTodoInput(e.target.value)}
-              onKeyDown={onTodoKeyDown}
-              placeholder="输入待办标题，回车创建"
+              placeholder="输入待办标题，回车创建（支持 #标签 !1 优先级）"
               spellCheck={false}
               autoFocus
             />
-            <button onClick={addTodo}>添加</button>
+            <button onClick={() => addTodo()} title="回车同效">添加</button>
+          </div>
+
+          {/* 统计条：未完成数 / 逾期·今日提醒 / 今日完成进度条 */}
+          <div className="todo-stat">
+            <span className="ts-num">{openCnt}</span>
+            <span className="ts-label">项未完成</span>
+            {(todoStats?.overdue ?? 0) > 0 && <span className="ts-badge od">⚠️ 逾期 {todoStats!.overdue}</span>}
+            {(todoStats?.today ?? 0) > 0 && <span className="ts-badge td">🔥 今天 {todoStats!.today}</span>}
+            <span className="ts-spacer" />
+            <span className="ts-pct" title={`今日完成 ${doneToday} 项`}>今日完成 {doneToday}</span>
+            <span className="ts-bar" title={`完成度 ${progress}%`}><i style={{ width: `${progress}%` }} /></span>
+          </div>
+
+          {/* 搜索 + 排序 */}
+          <div className="todo-tools">
+            <input
+              className="todo-search"
+              value={todoQuery}
+              onChange={(e) => setTodoQuery(e.target.value)}
+              placeholder="🔍 搜索标题 / 内容 / 标签…"
+              spellCheck={false}
+            />
+            <select
+              className="todo-sort"
+              value={todoSort}
+              onChange={(e) => setTodoSort(e.target.value as "smart" | "due" | "prio" | "created")}
+              title="排序方式"
+            >
+              <option value="smart">智能排序</option>
+              <option value="due">按截止日</option>
+              <option value="prio">按优先级</option>
+              <option value="created">按创建时间</option>
+            </select>
           </div>
 
           {/* 筛选 chips */}
@@ -612,78 +917,66 @@ export default function App() {
           </div>
 
           <div className="todo-list">
-            {todos.length === 0 && <div className="empty">暂无待办 — 添加或右键剪贴板条目「存为待办」</div>}
-            {todos.map((t) => {
-              const tags: string[] = safeJson(t.tags);
-              const hasContent = !!t.content && htmlToText(t.content).length > 0;
+            {visibleTodos.length === 0 && (
+              <div className="empty todo-empty">
+                {searching || tagFilter ? (
+                  <>
+                    <div className="ee-t">没有匹配的待办</div>
+                    <div className="ee-s">试试别的关键词，或清空搜索 / 标签筛选</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="ee-t">还没有待办</div>
+                    <div className="ee-s">在上方输入框写一条，回车即可创建</div>
+                    <div className="ee-tips">
+                      <span><code>#工作</code> 加标签</span>
+                      <span><code>!1</code> <code>!2</code> <code>!3</code> 设优先级</span>
+                      <span><code>Ctrl+V</code> 把剪贴板内容存为待办</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            {useGroups && todoGroups.map((g) => {
+              const isCollapsed = !!collapsed[g.key];
               return (
-                <div
-                  key={t.id}
-                  className={t.done ? "trow done" : "trow"}
-                  data-calopen={dueFor === t.id ? "1" : undefined}
-                  onDoubleClick={() => openEditor(t)}
-                >
-                  <input type="checkbox" className="cb" checked={t.done} onChange={() => toggleTodo(t.id)} />
-                  <div className="tbody">
-                    <div className="trow-main">
-                      <span
-                        className={t.pinned ? "pin on" : "pin"}
-                        onClick={() => togglePin(t.id)}
-                        title={t.pinned ? "取消置顶" : "置顶"}
-                      >📌</span>
-                      <span
-                        className={"prio p" + t.priority}
-                        onClick={() => cyclePriority(t.id, t.priority)}
-                        title={`优先级：${PRIO_NAME[t.priority]}（点击切换）`}
-                      >{PRIO_ICON[t.priority]}</span>
-                      {t.due_at != null && !t.done && (() => {
-                        const { label, cls } = dueLabel(t.due_at);
-                        return <span className={cls}>{label}</span>;
-                      })()}
-                      <span className="ttitle" title="双击编辑详情">
-                        {t.kind === "image" && t.image_path
-                          ? <img className="timg" src={convertFileSrc(t.image_path.replace(/\.dib$/, ".png"))} alt="待办图片" onClick={(e) => { e.stopPropagation(); setViewerImg((e.target as HTMLImageElement).src); }} />
-                          : null}
-                        <span className="ttxt">{t.title || t.text || ""}</span>
-                        {hasContent && <span className="tcontent-dot" title="有详细内容">☰</span>}
-                      </span>
-                    </div>
-                    <div className="tmeta">
-                      {tags.length > 0 && (
-                        <span className="tagrow">
-                          {tags.map((g) => (
-                            <span key={g} className="tag" onClick={() => setTagFilter(g)}>#{g}</span>
-                          ))}
-                        </span>
-                      )}
-                      {KIND_ICON[t.kind] ?? "❔"} {t.kind !== "text" && `${t.kind} · `}{relTime(t.ts)}
-                      {t.done && t.done_at && ` · 完成 ${new Date(t.done_at).toLocaleTimeString()}`}
-                    </div>
+                <div className="tgroup" key={g.key}>
+                  <div
+                    className={isCollapsed ? "tgroup-hd collapsed" : "tgroup-hd"}
+                    onClick={() => setCollapsed((c) => ({ ...c, [g.key]: !c[g.key] }))}
+                    title={isCollapsed ? "展开分组" : "折叠分组"}
+                  >
+                    <span className="tg-caret">{isCollapsed ? "▸" : "▾"}</span>
+                    <span className="tg-label">{g.label}</span>
+                    <span className="tg-count">{g.items.length}</span>
                   </div>
-                  <div className="tacts">
-                    <button
-                      onClick={(e) => {
-                        if (dueFor === t.id) setDueFor(null);
-                        else { setDueAnchor(e.currentTarget.getBoundingClientRect()); setDueFor(t.id); }
-                      }}
-                      title="设置截止日">📅</button>
-                    <button onClick={() => openEditor(t)} title="编辑详情（双击行）">编辑</button>
-                        <button onClick={() => deleteTodo(t.id)}>删除</button>
-                  </div>
-                  {dueFor === t.id && dueAnchor && (
-                    <CalendarPopover
-                      value={t.due_at != null ? new Date(t.due_at).toISOString().slice(0, 10) : null}
-                      anchorRect={dueAnchor}
-                      onPick={(ymd) => setDue(t.id, ymd)}
-                      onClose={() => setDueFor(null)}
-                    />
-                  )}
+                  {!isCollapsed && g.items.map((t) => todoRow(t))}
                 </div>
               );
             })}
+            {!useGroups && visibleTodos.map((t) => todoRow(t))}
           </div>
           <div className="todo-foot">
-                      </div>
+            {undoBar > 0 ? (
+              <div className="undo-bar">
+                <span className="ub-text">已删除 {undoBar} 项</span>
+                <button className="undo-btn" onClick={undoDelete}>撤销</button>
+                <span className="ub-hint">（5 秒后自动确认）</span>
+              </div>
+            ) : (
+              <>
+                <span className="foot-hint">
+                  ↑↓ 选择 · Enter 编辑 · 空格 完成 · Del 删除 · Ctrl+V 存剪贴板
+                </span>
+                <button
+                  className="foot-clear"
+                  disabled={(todoStats?.done ?? 0) === 0}
+                  onClick={clearDone}
+                  title="删除所有已完成待办（5 秒内可撤销）"
+                >清除已完成{(todoStats?.done ?? 0) > 0 ? ` (${todoStats!.done})` : ""}</button>
+              </>
+            )}
+          </div>
         </div>
       )}
 
