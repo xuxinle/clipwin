@@ -373,28 +373,40 @@ pub fn write_text(text: &str) -> Result<(), String> {
 
 /// 发送粘贴键：终端类目标合成 Shift+Insert（终端通用粘贴键），其余 Ctrl+V
 unsafe fn send_paste_key(shift_insert: bool) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY,
+    };
     let (mod_vk, key_vk) = if shift_insert {
         (VK_SHIFT, VK_INSERT)
     } else {
         (VK_CONTROL, VK_V)
     };
-    let mk = |vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY, up: bool| INPUT {
+    // Insert 属扩展键（扫描码 E0 52）：不带 KEYEVENTF_EXTENDEDKEY 时，接收方会把它
+    // 当数字键盘 0（NumPad0）解析，终端收不到 Insert —— 粘贴静默失败（v0.1.4 终端回贴失效的根因）
+    let key_ext = shift_insert;
+    let mk = |vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY, up: bool, ext: bool| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: vk,
                 wScan: 0,
-                dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                dwFlags: {
+                    let mut f = if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS::default() };
+                    if ext {
+                        f |= KEYEVENTF_EXTENDEDKEY;
+                    }
+                    f
+                },
                 time: 0,
                 dwExtraInfo: 0,
             },
         },
     };
     let seq = [
-        mk(mod_vk, false),
-        mk(key_vk, false),
-        mk(key_vk, true),
-        mk(mod_vk, true),
+        mk(mod_vk, false, false),
+        mk(key_vk, false, key_ext),
+        mk(key_vk, true, key_ext),
+        mk(mod_vk, true, false),
     ];
     let sent = SendInput(&seq, std::mem::size_of::<INPUT>() as i32);
     if sent != 4 {

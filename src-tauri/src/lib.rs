@@ -181,15 +181,20 @@ pub fn run() {
                     )
                 };
                 let sc: Shortcut = hk.parse().unwrap_or_else(|_| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyQ));
-                app.global_shortcut().on_shortcut(sc, move |_app, _s, e| {
+                // 热键被占用不崩溃：降级为托盘提示 + 继续运行（否则应用秒退，用户无从设置）
+                if let Err(e) = app.global_shortcut().on_shortcut(sc, move |_app, _s, e| {
                     if e.state() == ShortcutState::Pressed { commands::toggle_main(&_app.clone()); }
-                })
-                .map_err(|e| format!("注册热键失败: {e}"))?;
+                }) {
+                    eprintln!("[clipwin] 剪贴板热键 {hk} 注册失败（可能被其他程序占用）: {e}");
+                    let _ = app.tray_by_id("main-tray").map(|t| t.set_tooltip(Some(&format!("clipwin · 热键 {hk} 被占用，请托盘右键打开设置更换"))));
+                }
                 let sc_t: Shortcut = hk_t.parse().unwrap_or_else(|_| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyW));
-                app.global_shortcut().on_shortcut(sc_t, move |_app, _s, e| {
+                if let Err(e) = app.global_shortcut().on_shortcut(sc_t, move |_app, _s, e| {
                     if e.state() == ShortcutState::Pressed { commands::toggle_main_todos(&_app.clone()); }
-                })
-                .map_err(|e| format!("注册待办热键失败: {e}"))?;
+                }) {
+                    eprintln!("[clipwin] 待办热键 {hk_t} 注册失败（可能被其他程序占用）: {e}");
+                    let _ = app.tray_by_id("main-tray").map(|t| t.set_tooltip(Some(&format!("clipwin · 热键 {hk_t} 被占用，请托盘右键打开设置更换"))));
+                }
             }
 
             Ok(())
